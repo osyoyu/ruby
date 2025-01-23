@@ -1095,6 +1095,56 @@ rb_dump_machine_register(FILE *errout, const ucontext_t *ctx)
 # define rb_dump_machine_register(errout, ctx) ((void)0)
 #endif /* dump_machine_register */
 
+struct crash_report_config_t {
+    bool frames;       // cf
+    bool backtrace;    // bt
+    bool parallel;     // parallel
+    bool registers;    // reg
+    bool cbacktrace;   // cbt
+    bool vm_backtrace; // vmbt
+    bool other;        // other
+};
+
+void
+parse_crash_report_config_str(struct crash_report_config_t *config, const char *config_str)
+{
+    char *config_str_copy = strdup(config_str);
+    char *token = strtok(config_str_copy, ",");
+    while (token) {
+        char *equals = strchr(token, '=');
+        if (equals) {
+            *equals = '\0';
+            const char *key = token;
+            const char *value = equals + 1;
+
+            if (strcmp(key, "cf") == 0) {
+                config->frames = (strcmp(value, "yes") == 0);
+            }
+            else if (strcmp(key, "bt") == 0) {
+                config->backtrace = (strcmp(value, "yes") == 0);
+            }
+            else if (strcmp(key, "parallel") == 0) {
+                config->registers = (strcmp(value, "yes") == 0);
+            }
+            else if (strcmp(key, "reg") == 0) {
+                config->registers = (strcmp(value, "yes") == 0);
+            }
+            else if (strcmp(key, "cbt") == 0) {
+                config->cbacktrace = (strcmp(value, "yes") == 0);
+            }
+            else if (strcmp(key, "vmbt") == 0) {
+                config->vm_backtrace = (strcmp(value, "yes") == 0);
+            }
+            else if (strcmp(key, "other") == 0) {
+                config->other = (strcmp(value, "yes") == 0);
+            }
+        }
+        token = strtok(NULL, ",");
+    }
+
+    free(config_str_copy);
+}
+
 bool
 rb_vm_bugreport(const void *ctx, FILE *errout)
 {
@@ -1106,6 +1156,22 @@ rb_vm_bugreport(const void *ctx, FILE *errout)
         if (r == -1) {
             snprintf(buf, sizeof(buf), "Launching RUBY_ON_BUG command failed.");
         }
+    }
+
+    struct crash_report_config_t *crash_report_config = xcalloc(1, sizeof(struct crash_report_config_t));
+    const char *ruby_crash_report_config_env = getenv("RUBY_CRASH_REPORT_CONFIG");
+    if (ruby_crash_report_config_env != NULL) {
+        parse_crash_report_config_str(crash_report_config, ruby_crash_report_config_env);
+    }
+    else {
+        // Enable all by default
+        crash_report_config->frames = true;
+        crash_report_config->backtrace = true;
+        crash_report_config->parallel = true;
+        crash_report_config->registers = true;
+        crash_report_config->cbacktrace = true;
+        crash_report_config->vm_backtrace = true;
+        crash_report_config->other = true;
     }
 
     // Thread unsafe best effort attempt to stop printing the bug report in an
@@ -1131,12 +1197,17 @@ rb_vm_bugreport(const void *ctx, FILE *errout)
     const rb_execution_context_t *ec = rb_current_execution_context(false);
 
     if (vm && ec) {
-        rb_vmdebug_stack_dump_raw(ec, ec->cfp, errout);
-        rb_backtrace_print_as_bugreport(errout);
-        kputs("\n");
-        // If we get here, hopefully things are intact enough that
-        // we can read these two numbers. It is an estimate because
-        // we are reading without synchronization.
+        if (crash_report_config->frames) {
+            rb_vmdebug_stack_dump_raw(ec, ec->cfp, errout);
+        }
+        if (crash_report_config->backtrace) {
+            rb_backtrace_print_as_bugreport(errout);
+            kputs("\n");
+        }
+        if (crash_report_config->parallel) {
+            // If we get here, hopefully things are intact enough that
+            // we can read these two numbers. It is an estimate because
+            // we are reading without synchronization.
         kprintf("-- Threading information "
                 "---------------------------------------------------\n");
         kprintf("Total ractor count: %u\n", vm->ractor.cnt);
@@ -1145,149 +1216,153 @@ rb_vm_bugreport(const void *ctx, FILE *errout)
             kprintf("Note that the Fiber scheduler is enabled\n");
         }
         kputs("\n");
+        }
     }
 
-    rb_dump_machine_register(errout, ctx);
+    if (crash_report_config->registers) {
+        rb_dump_machine_register(errout, ctx);
+    }
 
 #if USE_BACKTRACE || defined(_WIN32)
-    kprintf("-- C level backtrace information "
-            "-------------------------------------------\n");
-    rb_print_backtrace(errout);
+    if (crash_report_config->cbacktrace) {
+        kprintf("-- C level backtrace information "
+                "-------------------------------------------\n");
+        rb_print_backtrace(errout);
 
-
-    kprintf("\n");
+        kprintf("\n");
+    }
 #endif /* USE_BACKTRACE */
 
-    if (other_runtime_info || vm) {
+    if (crash_report_config->other && (other_runtime_info || vm)) {
         kprintf("-- Other runtime information "
                 "-----------------------------------------------\n\n");
-    }
-    if (vm && !rb_during_gc()) {
-        int i;
-        VALUE name;
-        long len;
-        const int max_name_length = 1024;
+        if (vm && !rb_during_gc()) {
+            int i;
+            VALUE name;
+            long len;
+            const int max_name_length = 1024;
 # define LIMITED_NAME_LENGTH(s) \
         (((len = RSTRING_LEN(s)) > max_name_length) ? max_name_length : (int)len)
 
-        name = vm->progname;
-        if (name) {
-            kprintf("* Loaded script: %.*s\n",
-                    LIMITED_NAME_LENGTH(name), RSTRING_PTR(name));
+            name = vm->progname;
+            if (name) {
+                kprintf("* Loaded script: %.*s\n",
+                        LIMITED_NAME_LENGTH(name), RSTRING_PTR(name));
+                kprintf("\n");
+            }
+            if (vm->loaded_features) {
+                kprintf("* Loaded features:\n\n");
+                for (i=0; i<RARRAY_LEN(vm->loaded_features); i++) {
+                    name = RARRAY_AREF(vm->loaded_features, i);
+                    if (RB_TYPE_P(name, T_STRING)) {
+                        kprintf(" %4d %.*s\n", i,
+                                LIMITED_NAME_LENGTH(name), RSTRING_PTR(name));
+                    }
+                    else if (RB_TYPE_P(name, T_CLASS) || RB_TYPE_P(name, T_MODULE)) {
+                        const char *const type = RB_TYPE_P(name, T_CLASS) ?
+                            "class" : "module";
+                        name = rb_search_class_path(rb_class_real(name));
+                        if (!RB_TYPE_P(name, T_STRING)) {
+                            kprintf(" %4d %s:<unnamed>\n", i, type);
+                            continue;
+                        }
+                        kprintf(" %4d %s:%.*s\n", i, type,
+                                LIMITED_NAME_LENGTH(name), RSTRING_PTR(name));
+                    }
+                    else {
+                        VALUE klass = rb_search_class_path(rb_obj_class(name));
+                        if (!RB_TYPE_P(klass, T_STRING)) {
+                            kprintf(" %4d #<%p:%p>\n", i,
+                                    (void *)CLASS_OF(name), (void *)name);
+                            continue;
+                        }
+                        kprintf(" %4d #<%.*s:%p>\n", i,
+                                LIMITED_NAME_LENGTH(klass), RSTRING_PTR(klass),
+                                (void *)name);
+                    }
+                }
+            }
             kprintf("\n");
         }
-        if (vm->loaded_features) {
-            kprintf("* Loaded features:\n\n");
-            for (i=0; i<RARRAY_LEN(vm->loaded_features); i++) {
-                name = RARRAY_AREF(vm->loaded_features, i);
-                if (RB_TYPE_P(name, T_STRING)) {
-                    kprintf(" %4d %.*s\n", i,
-                            LIMITED_NAME_LENGTH(name), RSTRING_PTR(name));
-                }
-                else if (RB_TYPE_P(name, T_CLASS) || RB_TYPE_P(name, T_MODULE)) {
-                    const char *const type = RB_TYPE_P(name, T_CLASS) ?
-                        "class" : "module";
-                    name = rb_search_class_path(rb_class_real(name));
-                    if (!RB_TYPE_P(name, T_STRING)) {
-                        kprintf(" %4d %s:<unnamed>\n", i, type);
-                        continue;
-                    }
-                    kprintf(" %4d %s:%.*s\n", i, type,
-                            LIMITED_NAME_LENGTH(name), RSTRING_PTR(name));
-                }
-                else {
-                    VALUE klass = rb_search_class_path(rb_obj_class(name));
-                    if (!RB_TYPE_P(klass, T_STRING)) {
-                        kprintf(" %4d #<%p:%p>\n", i,
-                                (void *)CLASS_OF(name), (void *)name);
-                        continue;
-                    }
-                    kprintf(" %4d #<%.*s:%p>\n", i,
-                            LIMITED_NAME_LENGTH(klass), RSTRING_PTR(klass),
-                            (void *)name);
-                }
-            }
-        }
-        kprintf("\n");
-    }
 
-    {
+        {
 #ifndef RUBY_ASAN_ENABLED
 # ifdef PROC_MAPS_NAME
-        {
-            FILE *fp = fopen(PROC_MAPS_NAME, "r");
-            if (fp) {
-                kprintf("* Process memory map:\n\n");
+            {
+                FILE *fp = fopen(PROC_MAPS_NAME, "r");
+                if (fp) {
+                    kprintf("* Process memory map:\n\n");
 
-                while (!feof(fp)) {
-                    char buff[0x100];
-                    size_t rn = fread(buff, 1, 0x100, fp);
-                    if (fwrite(buff, 1, rn, errout) != rn)
-                        break;
+                    while (!feof(fp)) {
+                        char buff[0x100];
+                        size_t rn = fread(buff, 1, 0x100, fp);
+                        if (fwrite(buff, 1, rn, errout) != rn)
+                            break;
+                    }
+
+                    fclose(fp);
+                    kprintf("\n\n");
                 }
-
-                fclose(fp);
-                kprintf("\n\n");
             }
-        }
 # endif /* __linux__ */
 # ifdef HAVE_LIBPROCSTAT
 #  define MIB_KERN_PROC_PID_LEN 4
-        int mib[MIB_KERN_PROC_PID_LEN];
-        struct kinfo_proc kp;
-        size_t len = sizeof(struct kinfo_proc);
-        mib[0] = CTL_KERN;
-        mib[1] = KERN_PROC;
-        mib[2] = KERN_PROC_PID;
-        mib[3] = getpid();
-        if (sysctl(mib, MIB_KERN_PROC_PID_LEN, &kp, &len, NULL, 0) == -1) {
-            kprintf("sysctl: %s\n", strerror(errno));
-        }
-        else {
-            struct procstat *prstat = procstat_open_sysctl();
-            kprintf("* Process memory map:\n\n");
-            procstat_vm(prstat, &kp, errout);
-            procstat_close(prstat);
-            kprintf("\n");
-        }
-# endif /* __FreeBSD__ */
-# ifdef __APPLE__
-        vm_address_t addr = 0;
-        vm_size_t size = 0;
-        struct vm_region_submap_info map;
-        mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT;
-        natural_t depth = 0;
-
-        kprintf("* Process memory map:\n\n");
-        while (1) {
-            if (vm_region_recurse(mach_task_self(), &addr, &size, &depth,
-                        (vm_region_recurse_info_t)&map, &count) != KERN_SUCCESS) {
-                break;
-            }
-
-            if (map.is_submap) {
-                // We only look at main addresses
-                depth++;
+            int mib[MIB_KERN_PROC_PID_LEN];
+            struct kinfo_proc kp;
+            size_t len = sizeof(struct kinfo_proc);
+            mib[0] = CTL_KERN;
+            mib[1] = KERN_PROC;
+            mib[2] = KERN_PROC_PID;
+            mib[3] = getpid();
+            if (sysctl(mib, MIB_KERN_PROC_PID_LEN, &kp, &len, NULL, 0) == -1) {
+                kprintf("sysctl: %s\n", strerror(errno));
             }
             else {
-                kprintf("%lx-%lx %s%s%s", addr, (addr+size),
-                        ((map.protection & VM_PROT_READ) != 0 ? "r" : "-"),
-                        ((map.protection & VM_PROT_WRITE) != 0 ? "w" : "-"),
-                    ((map.protection & VM_PROT_EXECUTE) != 0 ? "x" : "-"));
-#  ifdef HAVE_LIBPROC_H
-                char buff[PATH_MAX];
-                if (proc_regionfilename(getpid(), addr, buff, sizeof(buff)) > 0) {
-                    kprintf(" %s", buff);
-                }
-#  endif
+                struct procstat *prstat = procstat_open_sysctl();
+                kprintf("* Process memory map:\n\n");
+                procstat_vm(prstat, &kp, errout);
+                procstat_close(prstat);
                 kprintf("\n");
             }
+# endif /* __FreeBSD__ */
+# ifdef __APPLE__
+            vm_address_t addr = 0;
+            vm_size_t size = 0;
+            struct vm_region_submap_info map;
+            mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT;
+            natural_t depth = 0;
 
-            addr += size;
-            size = 0;
-        }
+            kprintf("* Process memory map:\n\n");
+            while (1) {
+                if (vm_region_recurse(mach_task_self(), &addr, &size, &depth,
+                            (vm_region_recurse_info_t)&map, &count) != KERN_SUCCESS) {
+                    break;
+                }
+
+                if (map.is_submap) {
+                    // We only look at main addresses
+                    depth++;
+                }
+                else {
+                    kprintf("%lx-%lx %s%s%s", addr, (addr+size),
+                            ((map.protection & VM_PROT_READ) != 0 ? "r" : "-"),
+                            ((map.protection & VM_PROT_WRITE) != 0 ? "w" : "-"),
+                        ((map.protection & VM_PROT_EXECUTE) != 0 ? "x" : "-"));
+#  ifdef HAVE_LIBPROC_H
+                    char buff[PATH_MAX];
+                    if (proc_regionfilename(getpid(), addr, buff, sizeof(buff)) > 0) {
+                        kprintf(" %s", buff);
+                    }
+#  endif
+                    kprintf("\n");
+                }
+
+                addr += size;
+                size = 0;
+            }
 # endif
 #endif
+        }
     }
     return true;
 
