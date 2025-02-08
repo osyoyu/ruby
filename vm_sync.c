@@ -8,6 +8,9 @@
 void rb_ractor_sched_barrier_start(rb_vm_t *vm, rb_ractor_t *cr);
 void rb_ractor_sched_barrier_join(rb_vm_t *vm, rb_ractor_t *cr);
 
+// Returns true if the VM lock is currently held by the current Ractor.
+// Note: Even when vm_locked() returns false, some Ractor may be attempting to acquire
+// the VM lock and waiting for the barrier.
 static bool
 vm_locked(rb_vm_t *vm)
 {
@@ -60,6 +63,7 @@ vm_need_barrier(bool no_barrier, const rb_ractor_t *cr, const rb_vm_t *vm)
 #endif
 }
 
+// Reentrant
 static void
 vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsigned int *lev APPEND_LOCATION_ARGS)
 {
@@ -83,6 +87,8 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
             rb_execution_context_t *ec = GET_EC();
             RB_VM_SAVE_MACHINE_CONTEXT(rb_ec_thread_ptr(ec));
 
+            // Loop until all Ractors have joined the barrier
+            // (= no Ractors have running threads)
             do {
                 VM_ASSERT(vm_need_barrier_waiting(vm));
                 RUBY_DEBUG_LOG("barrier serial:%u", vm->ractor.sched.barrier_serial);
@@ -122,11 +128,15 @@ vm_lock_leave(rb_vm_t *vm, unsigned int *lev APPEND_LOCATION_ARGS)
     }
 }
 
+// Acquires the VM lock.
+// Start a critical section.
+// Creates a "barrier", which will essentially require all active Ractors to have no running threads.
 void
 rb_vm_lock_enter_body(unsigned int *lev APPEND_LOCATION_ARGS)
 {
     rb_vm_t *vm = GET_VM();
     if (vm_locked(vm)) {
+        // reenter the lock
         vm_lock_enter(NULL, vm, true, false, lev APPEND_LOCATION_PARAMS);
     }
     else {
@@ -134,6 +144,9 @@ rb_vm_lock_enter_body(unsigned int *lev APPEND_LOCATION_ARGS)
     }
 }
 
+// The no-barrier version of rb_vm_lock_enter_body.
+// This version acquires the VM lock without requiring all Ractors to pause their threads.
+// Used when synchronization is needed but a full thread barrier is not required.
 void
 rb_vm_lock_enter_body_nb(unsigned int *lev APPEND_LOCATION_ARGS)
 {
