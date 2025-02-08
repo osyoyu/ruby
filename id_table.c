@@ -1,6 +1,7 @@
 /* This file is included by symbol.c */
 
 #include "id_table.h"
+#include <string.h>
 
 #ifndef ID_TABLE_DEBUG
 #define ID_TABLE_DEBUG 0
@@ -11,6 +12,7 @@
 #define NDEBUG
 #endif
 #include "ruby_assert.h"
+#include <pthread.h>
 
 typedef rb_id_serial_t id_key_t;
 
@@ -43,6 +45,7 @@ struct rb_id_table {
     int num;
     int used;
     item_t *items;
+    pthread_mutex_t *mutex;
 };
 
 #if SIZEOF_VALUE == 8
@@ -89,6 +92,18 @@ rb_id_table_init(struct rb_id_table *tbl, int capa)
         tbl->capa = (int)capa;
         tbl->items = ZALLOC_N(item_t, capa);
     }
+    tbl->mutex = ALLOC(pthread_mutex_t);
+
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+
+    int err = pthread_mutex_init(tbl->mutex, &attr);
+    // pthread_mutexattr_destroy(&attr);
+
+    if (err) {
+        fprintf(stderr, "pthread_mutex_init failed: %s\n", strerror(err));
+    }
     return tbl;
 }
 
@@ -102,6 +117,8 @@ rb_id_table_create(size_t capa)
 void
 rb_id_table_free(struct rb_id_table *tbl)
 {
+    pthread_mutex_destroy(tbl->mutex);
+    xfree(tbl->mutex);
     xfree(tbl->items);
     xfree(tbl);
 }
@@ -109,21 +126,38 @@ rb_id_table_free(struct rb_id_table *tbl)
 void
 rb_id_table_clear(struct rb_id_table *tbl)
 {
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
     tbl->num = 0;
     tbl->used = 0;
     MEMZERO(tbl->items, item_t, tbl->capa);
+    pthread_mutex_unlock(tbl->mutex);
 }
 
 size_t
 rb_id_table_size(const struct rb_id_table *tbl)
 {
-    return (size_t)tbl->num;
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
+    size_t size = (size_t)tbl->num;
+    pthread_mutex_unlock(tbl->mutex);
+    return size;
 }
 
 size_t
 rb_id_table_memsize(const struct rb_id_table *tbl)
 {
-    return sizeof(item_t) * tbl->capa + sizeof(struct rb_id_table);
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
+    size_t size = sizeof(item_t) * tbl->capa + sizeof(struct rb_id_table);
+    pthread_mutex_unlock(tbl->mutex);
+    return size;
 }
 
 static int
@@ -188,12 +222,14 @@ hash_table_extend(struct rb_id_table* tbl)
         int new_cap = round_capa(tbl->num + (tbl->num >> 1));
         int i;
         item_t* old;
-        struct rb_id_table tmp_tbl = {0, 0, 0};
+        struct rb_id_table tmp_tbl = {0};
         if (new_cap < tbl->capa) {
             new_cap = round_capa(tbl->used + (tbl->used >> 1));
         }
         tmp_tbl.capa = new_cap;
         tmp_tbl.items = ZALLOC_N(item_t, new_cap);
+        tmp_tbl.mutex = tbl->mutex;
+
         for (i = 0; i < tbl->capa; i++) {
             id_key_t key = ITEM_GET_KEY(tbl, i);
             if (key != 0) {
@@ -226,16 +262,22 @@ hash_table_show(struct rb_id_table *tbl)
 int
 rb_id_table_lookup(struct rb_id_table *tbl, ID id, VALUE *valp)
 {
+    int ret;
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
     id_key_t key = id2key(id);
     int index = hash_table_index(tbl, key);
-
     if (index >= 0) {
         *valp = tbl->items[index].val;
-        return TRUE;
+        ret = TRUE;
     }
     else {
-        return FALSE;
+        ret = FALSE;
     }
+    pthread_mutex_unlock(tbl->mutex);
+    return ret;
 }
 
 static int
@@ -256,20 +298,36 @@ rb_id_table_insert_key(struct rb_id_table *tbl, const id_key_t key, const VALUE 
 int
 rb_id_table_insert(struct rb_id_table *tbl, ID id, VALUE val)
 {
-    return rb_id_table_insert_key(tbl, id2key(id), val);
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
+    int ret = rb_id_table_insert_key(tbl, id2key(id), val);
+    pthread_mutex_unlock(tbl->mutex);
+    return ret;
 }
 
 int
 rb_id_table_delete(struct rb_id_table *tbl, ID id)
 {
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
     const id_key_t key = id2key(id);
     int index = hash_table_index(tbl, key);
-    return hash_delete_index(tbl, index);
+    int ret = hash_delete_index(tbl, index);
+    pthread_mutex_unlock(tbl->mutex);
+    return ret;
 }
 
 void
 rb_id_table_foreach(struct rb_id_table *tbl, rb_id_table_foreach_func_t *func, void *data)
 {
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
     int i, capa = tbl->capa;
 
     for (i=0; i<capa; i++) {
@@ -278,34 +336,50 @@ rb_id_table_foreach(struct rb_id_table *tbl, rb_id_table_foreach_func_t *func, v
             enum rb_id_table_iterator_result ret = (*func)(key2id(key), tbl->items[i].val, data);
             RUBY_ASSERT(key != 0);
 
-            if (ret == ID_TABLE_DELETE)
+            if (ret == ID_TABLE_DELETE) {
                 hash_delete_index(tbl, i);
-            else if (ret == ID_TABLE_STOP)
+            }
+            else if (ret == ID_TABLE_STOP) {
+                pthread_mutex_unlock(tbl->mutex);
                 return;
+            }
         }
     }
+    pthread_mutex_unlock(tbl->mutex);
 }
 
 void
 rb_id_table_foreach_values(struct rb_id_table *tbl, rb_id_table_foreach_values_func_t *func, void *data)
 {
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
     int i, capa = tbl->capa;
 
     for (i=0; i<capa; i++) {
         if (ITEM_KEY_ISSET(tbl, i)) {
             enum rb_id_table_iterator_result ret = (*func)(tbl->items[i].val, data);
 
-            if (ret == ID_TABLE_DELETE)
+            if (ret == ID_TABLE_DELETE) {
                 hash_delete_index(tbl, i);
-            else if (ret == ID_TABLE_STOP)
+            }
+            else if (ret == ID_TABLE_STOP) {
+                pthread_mutex_unlock(tbl->mutex);
                 return;
+            }
         }
     }
+    pthread_mutex_unlock(tbl->mutex);
 }
 
 void
 rb_id_table_foreach_values_with_replace(struct rb_id_table *tbl, rb_id_table_foreach_values_func_t *func, rb_id_table_update_value_callback_func_t *replace, void *data)
 {
+    int err = pthread_mutex_lock(tbl->mutex);
+    if (err) {
+        fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(err));
+    }
     int i, capa = tbl->capa;
 
     for (i = 0; i < capa; i++) {
@@ -318,9 +392,12 @@ rb_id_table_foreach_values_with_replace(struct rb_id_table *tbl, rb_id_table_for
                 tbl->items[i].val = val;
             }
 
-            if (ret == ID_TABLE_STOP)
+            if (ret == ID_TABLE_STOP) {
+                pthread_mutex_unlock(tbl->mutex);
                 return;
+            }
         }
     }
+    pthread_mutex_unlock(tbl->mutex);
 }
 

@@ -21,7 +21,7 @@
 // For the default GC, do not copy-paste this when implementing
 // these functions. This takes advantage of internal linkage winning
 // when appearing first. See C99 6.2.2p4.
-# define GC_IMPL_FN static
+# define GC_IMPL_FN
 #endif
 
 // Bootup

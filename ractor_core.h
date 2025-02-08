@@ -189,6 +189,7 @@ struct rb_ractor_struct {
     VALUE debug;
 
     void *newobj_cache;
+    void *objspace; // rb_objspace_t
 }; // rb_ractor_t is defined in vm_core.h
 
 

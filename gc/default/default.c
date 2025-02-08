@@ -29,6 +29,8 @@
 #include "darray.h"
 #include "gc/gc.h"
 #include "gc/gc_impl.h"
+// #include "vm_core.h"
+// #include "ractor_core.h"
 
 #ifndef BUILDING_MODULAR_GC
 # include "probes.h"
@@ -2393,6 +2395,7 @@ rb_gc_impl_heap_sizes(void *objspace_ptr)
 
 NOINLINE(static VALUE newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx, bool vm_locked));
 
+// osyoyu memo
 static VALUE
 newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx, bool vm_locked)
 {
@@ -2426,6 +2429,7 @@ newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size
         }
     }
 
+    // Release the lock if we acquired it
     if (unlock_vm) {
         rb_gc_cr_unlock(lev);
     }
@@ -2523,6 +2527,7 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
 
     size_t heap_idx = heap_idx_for_size(alloc_size);
 
+    // osyoyu memo
     rb_ractor_newobj_cache_t *cache = (rb_ractor_newobj_cache_t *)cache_ptr;
 
     if (!RB_UNLIKELY(during_gc || ruby_gc_stressful) &&
@@ -4630,7 +4635,18 @@ gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
 static void
 gc_mark_children(rb_objspace_t *objspace, VALUE obj)
 {
+    // osyoyu impl
+    // Skip if obj does not belong to current ractor
+
+    // struct rb_ractor_struct *ractor = rb_ec_ractor_ptr(GET_EC());
+    // rb_ractor_newobj_cache_t *cache = (rb_ractor_newobj_cache_t *)ractor->newobj_cache;
+    // for (int i = 0; i < 5; i++) {
+    //     rb_ractor_newobj_heap_cache_t *heap_cache = &cache->heap_caches[i];
+
+    // }
+
     gc_mark_set_parent(objspace, obj);
+    // return;
     rb_gc_mark_children(objspace, obj);
 }
 
@@ -6634,6 +6650,7 @@ gc_clock_end(struct timespec *ts)
 static inline void
 gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
 {
+    // osyoyu edit
     *lock_lev = rb_gc_vm_lock();
 
     switch (event) {

@@ -1002,10 +1002,20 @@ gc_validate_pc(void) {
 #endif
 }
 
+// osyoyu memo
 static inline VALUE
 newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, bool wb_protected, size_t size)
 {
-    VALUE obj = rb_gc_impl_new_obj(rb_gc_get_objspace(), cr->newobj_cache, klass, flags, v1, v2, v3, wb_protected, size);
+    // VALUE obj = rb_gc_impl_new_obj(rb_gc_get_objspace(), cr->newobj_cache, klass, flags, v1, v2, v3, wb_protected, size);
+    VALUE obj;
+    if (cr == ruby_single_main_ractor) {
+        // If main Ractor, use global objspace
+        obj = rb_gc_impl_new_obj(rb_gc_get_objspace(), cr->newobj_cache, klass, flags, v1, v2, v3, wb_protected, size);
+    }
+    else {
+        // If non-main Ractor, use the ractor-local objspace
+        obj = rb_gc_impl_new_obj(cr->objspace, cr->newobj_cache, klass, flags, v1, v2, v3, wb_protected, size);
+    }
 
     gc_validate_pc();
 
@@ -2631,6 +2641,10 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
     MARK_CHECKPOINT("vm");
     rb_vm_mark(vm);
     if (vm->self) gc_mark_internal(vm->self);
+
+// osyoyu edits1
+    // struct rb_ractor_struct *ractor = rb_ec_ractor_ptr(ec);
+    // rb_gc_mark(rb_ractor_self(ractor));
 
     MARK_CHECKPOINT("end_proc");
     rb_mark_end_proc();

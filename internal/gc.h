@@ -122,6 +122,7 @@ const char *rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj)
 struct rb_execution_context_struct; /* in vm_core.h */
 struct rb_objspace; /* in vm_core.h */
 
+// osyoyu memo
 #define NEWOBJ_OF(var, T, c, f, s, ec) \
     T *(var) = (T *)(((f) & FL_WB_PROTECTED) ? \
             rb_wb_protected_newobj_of((ec ? ec : GET_EC()), (c), (f) & ~FL_WB_PROTECTED, s) : \

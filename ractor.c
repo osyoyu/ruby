@@ -19,6 +19,8 @@
 #include "variable.h"
 #include "yjit.h"
 #include "rjit.h"
+#include "gc.h"
+#include "gc/gc_impl.h"
 
 VALUE rb_cRactor;
 static VALUE rb_cRactorSelector;
@@ -1974,6 +1976,12 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     else {
         r->newobj_cache = rb_gc_ractor_cache_alloc(r);
     }
+
+    // re-impl rb_objspace_alloc
+    void *objspace = rb_gc_impl_objspace_alloc();
+    r->objspace = objspace;
+    rb_gc_impl_objspace_init(objspace);
+    rb_gc_impl_stress_set(objspace, Qfalse);
 }
 
 static void
