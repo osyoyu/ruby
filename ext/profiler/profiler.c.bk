@@ -1,0 +1,358 @@
+#include <execinfo.h>
+#include <dlfcn.h>
+#include <unistd.h>
+
+#include "ruby/ruby.h"
+#include "ruby/debug.h"
+#include "ruby/thread.h"
+#include "vm_core.h"
+
+#include "tarai.c"
+
+#define sigev_notify_thread_id _sigev_un._tid
+
+int initialized = 0;
+
+struct rprof_sample {
+    VALUE frame;
+    int line;
+};
+
+struct save {
+    int rcollected;
+    VALUE rbuffer[500];
+    int lines[500];
+
+    int ccollected;
+    void *cbuffer[500];
+};
+
+struct save *save = NULL;
+
+static const rb_iseq_t *
+frame2iseq(VALUE frame)
+{
+    if (NIL_P(frame)) return NULL;
+
+    if (RB_TYPE_P(frame, T_IMEMO)) {
+        switch (imemo_type(frame)) {
+          case imemo_iseq:
+            return (const rb_iseq_t *)frame;
+          case imemo_ment:
+            {
+                const rb_callable_method_entry_t *cme = (rb_callable_method_entry_t *)frame;
+                switch (cme->def->type) {
+                  case VM_METHOD_TYPE_ISEQ:
+                    return cme->def->body.iseq.iseqptr;
+                  default:
+                    return NULL;
+                }
+            }
+          default:
+            break;
+        }
+    }
+    rb_bug("frame2iseq: unreachable");
+}
+
+static const rb_callable_method_entry_t *
+cframe(VALUE frame)
+{
+    if (NIL_P(frame)) return NULL;
+
+    if (RB_TYPE_P(frame, T_IMEMO)) {
+        switch (imemo_type(frame)) {
+          case imemo_ment:
+            {
+                const rb_callable_method_entry_t *cme = (rb_callable_method_entry_t *)frame;
+                switch (cme->def->type) {
+                  case VM_METHOD_TYPE_CFUNC:
+                    return cme;
+                  default:
+                    return NULL;
+                }
+            }
+          default:
+            return NULL;
+        }
+    }
+
+    return NULL;
+}
+
+/**
+ * Try to get line number information using addr2line
+ */
+void *
+addr2line(void *addr)
+{
+    void *shifted = (void *)((char *)addr - 1);
+
+    Dl_info info;
+    if (dladdr(shifted, &info) && info.dli_fname) {
+        // function name and address
+        printf("  %p %s", info.dli_saddr, info.dli_sname);
+
+        // Use addr2line to get file:line information
+        char cmd[256];
+        char line[256];
+        snprintf(cmd, sizeof(cmd), "addr2line -j .text -i -e %s -fC %p 2> /dev/null", info.dli_fname, info.dli_saddr);
+        FILE *pipe = popen(cmd, "r");
+        if (pipe) {
+            if (fgets(line, sizeof(line), pipe)) {
+                // Remove newline
+                line[strcspn(line, "\n")] = 0;
+                // Skip if addr2line couldn't resolve
+                printf(" %s", line);
+                if (strcmp(line, "??") != 0 && strcmp(line, "??:0") != 0) {
+                    // Read the file:line info
+                    if (fgets(line, sizeof(line), pipe)) {
+                        line[strcspn(line, "\n")] = 0;
+                        printf(" %s", line);
+                    }
+                }
+            }
+            pclose(pipe);
+        }
+    }
+
+    return info.dli_saddr;
+}
+
+void
+postponed_job(void *data)
+{
+    printf("--- Postponed Job start ---\n");
+
+    printf("%d Ruby frames collected\n", save->rcollected);
+
+    for (int i = 0; i < save->rcollected; i++) {
+        VALUE frame = save->rbuffer[i];
+        printf("%p", (void *)frame);
+
+        VALUE method_name = rb_profile_frame_full_label(frame);
+        char *method_name_cstr = StringValueCStr(method_name);
+        printf(" %s", method_name_cstr);
+
+        // Is this a C frame?
+        const rb_callable_method_entry_t *cfunc_cme = cframe(frame);
+        if (cfunc_cme) {
+            printf(" (cfunc) \n");
+
+            // Grab the address of the underlying C function
+            void *cfunc_address = cfunc_cme->def->body.cfunc.func;
+
+            for (int j = 0; j < save->ccollected; j++) {
+                void *function_addr = addr2line(save->cbuffer[j]);
+                if (function_addr == cfunc_address) {
+                    break;
+                }
+                printf("\n");
+            }
+        } else {
+            // This is a Ruby frame
+            const rb_iseq_t *iseq = frame2iseq(frame);
+            if (iseq) {
+                if (ISEQ_BODY(iseq)->jit_entry == NULL) {
+                    printf(" (ruby interp)\n");
+                } else {
+                    printf(" (ruby yjit)\n");
+                }
+            } else {
+                // ?
+            }
+        }
+    }
+
+    printf("--- Postponed Job end ---\n");
+}
+
+rb_postponed_job_handle_t phandle;
+
+void
+ensure_save_is_initialized(void)
+{
+    if (initialized) { return; }
+
+    save = malloc(sizeof(struct save));
+
+    initialized = 1;
+
+    phandle = rb_postponed_job_preregister(0, postponed_job, NULL);
+}
+
+VALUE
+rb_profile_frames_osyoyu2(VALUE self, VALUE debug)
+{
+    int collected = rb_profile_frames(0, 500, save->rbuffer, save->lines);
+    int collected_c = backtrace(save->cbuffer, 500);
+
+    save->rcollected = collected;
+    save->ccollected = collected_c;
+
+    rb_postponed_job_trigger(phandle);
+
+    return Qtrue;
+}
+
+VALUE
+rb_profile_frames_osyoyu(VALUE self, VALUE debug)
+{
+    ensure_save_is_initialized();
+    return rb_profile_frames_osyoyu2(self, debug);
+}
+
+
+__pid_t collected_tids[100000] = { 0 };
+VALUE collected_rbrids[100000] = { 0 };
+int collected_tids_count = 0;
+
+static void
+sigprof_handler(int sig, siginfo_t *si, void *ucontext)
+{
+    // async-signal-safe
+
+    // printf("handled!\n");
+
+    // __pid_t tid = gettid();
+    __pid_t tid = (__pid_t)(si->si_value.sival_ptr);
+    // printf("sigprof_handler: tid=%d\n", tid);
+    collected_tids[collected_tids_count] = tid;
+    collected_rbrids[collected_tids_count] = rb_thread_current();
+    collected_tids_count++;
+
+    // rb_profile_frames_osyoyu2(Qtrue, Qfalse);
+}
+
+timer_t timer;
+
+/**
+ * Install profiler on current thread.
+ */
+VALUE
+rb_profiler_enable(VALUE self)
+{
+    ensure_save_is_initialized();
+
+    // Install signal handler
+    struct sigaction sa;
+    sa.sa_sigaction = sigprof_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaddset(&sa.sa_mask, SIGPROF); // Mask SIGPROFs when handler is running
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    if (sigaction(SIGPROF, &sa, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to install SIGPROF handler");
+    }
+
+    // Collect active Ruby Threads
+
+    // Accept SIGPROFs
+    struct sigevent sev;
+    sev.sigev_notify = SIGEV_SIGNAL;
+    // sev.sigev_notify = SIGEV_THREAD_ID;
+    // sev.sigev_notify_thread_id = 0; // Linux-specific
+    sev.sigev_signo = SIGPROF;
+    int res = timer_create(CLOCK_PROCESS_CPUTIME_ID, &sev, &timer);
+    if (res == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to create timer: %s", strerror(errno));
+    }
+
+    struct itimerspec its = {
+        .it_value = {
+            .tv_sec = 0,
+            .tv_nsec = 10 * 1000000, // per 10 ms
+        },
+        .it_interval = {
+            .tv_sec = 0,
+            .tv_nsec = 10 * 1000000, // per 10 ms
+        },
+    };
+    if (timer_settime(timer, 0, &its, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to set timer: %s", strerror(errno));
+    }
+
+    return Qtrue;
+}
+
+VALUE
+rb_profiler_disable(VALUE self)
+{
+    // Stop timer
+    struct itimerspec its = {0};
+    if (timer_settime(timer, 0, &its, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to stop timer: %s", strerror(errno));
+    }
+
+    VALUE ary = rb_ary_new_capa(collected_tids_count);
+    for (int i = 0; i < collected_tids_count; i++) {
+        rb_ary_push(ary, INT2NUM(collected_tids[i]));
+    }
+
+    VALUE ary2 = rb_ary_new_capa(collected_tids_count);
+    for (int i = 0; i < collected_tids_count; i++) {
+        rb_ary_push(ary2, LONG2NUM((long)collected_rbrids[i]));
+    }
+
+    VALUE ary3 = rb_ary_new_capa(2);
+    rb_ary_push(ary3, ary);
+    rb_ary_push(ary3, ary2);
+
+    return ary3;
+}
+
+void
+thread_callback(rb_event_flag_t flag, const rb_internal_thread_event_data_t *data, void *custom_data)
+{
+    // print gettid
+    if (flag == RUBY_INTERNAL_THREAD_EVENT_STARTED) {
+        printf("thread started: %d\n", gettid());
+    }
+
+    __pid_t tid = gettid();
+
+    // Collect active Ruby Threads
+
+    // Accept SIGPROFs
+    struct sigevent sev;
+    sev.sigev_notify = SIGEV_THREAD_ID;
+    sev.sigev_notify_thread_id = tid; // Linux-specific
+    sev.sigev_signo = SIGPROF;
+    sev.sigev_value.sival_ptr = (void *)tid;
+    printf("before timer_create ok\n");
+    int res = timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &timer);
+    if (res == -1) {
+        printf("panic! %s", strerror(errno));
+        exit(1);
+    }
+    printf("sev ok\n");
+
+    struct itimerspec its = {
+        .it_value = {
+            .tv_sec = 0,
+            .tv_nsec = 10 * 1000000, // per 10 ms
+        },
+        .it_interval = {
+            .tv_sec = 0,
+            .tv_nsec = 10 * 1000000, // per 10 ms
+        },
+    };
+    if (timer_settime(timer, 0, &its, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to set timer: %s", strerror(errno));
+    }
+
+    printf("callback ok\n");
+}
+
+void
+Init_profiler(void)
+{
+    rb_internal_thread_add_event_hook(&thread_callback, RUBY_INTERNAL_THREAD_EVENT_STARTED, NULL);
+
+    GET_VM();
+    VALUE rb_mRuby = rb_define_module("Ruby");
+    VALUE rb_mProfiler = rb_define_module_under(rb_mRuby, "Profiler");
+    rb_define_module_function(rb_mProfiler, "tarai", rb_tarai, 3);
+    rb_define_module_function(rb_mProfiler, "enable", rb_profiler_enable, 0);
+    rb_define_module_function(rb_mProfiler, "disable", rb_profiler_disable, 0);
+    rb_define_module_function(rb_mProfiler, "osyoyu", rb_profile_frames_osyoyu, 1);
+}
