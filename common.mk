@@ -187,6 +187,7 @@ COMMONOBJS    = \
 		vm_dump.$(OBJEXT) \
 		vm_sync.$(OBJEXT) \
 		vm_trace.$(OBJEXT) \
+		vm_profile.$(OBJEXT) \
 		weakmap.$(OBJEXT) \
 		$(PRISM_FILES) \
 		$(YJIT_OBJ) \

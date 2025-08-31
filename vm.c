@@ -4324,6 +4324,9 @@ Init_VM(void)
     rb_obj_freeze(rb_block_param_proxy);
     rb_vm_register_global_object(rb_block_param_proxy);
 
+    /* vm_profile.c */
+    Init_vm_profile();
+
     /* vm_backtrace.c */
     Init_vm_backtrace();
 }
