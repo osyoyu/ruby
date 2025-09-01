@@ -92,6 +92,7 @@ thread_sched_wait_events(struct rb_thread_sched *sched, rb_thread_t *th, int fd,
                 thread_sched_wait_running_turn(sched, th, true);
 
                 RUBY_DEBUG_LOG("wakeup");
+                RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_RESUMED, th);
             }
 
             timedout = th->sched.waiting_reason.data.result == 0;
@@ -458,7 +459,8 @@ co_start(struct coroutine_context *from, struct coroutine_context *self)
     thread_sched_add_running_thread(TH_SCHED(th), th);
     thread_sched_unlock(sched, th);
     {
-        RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_RESUMED, th);
+        // Call STARTED hook now that the thread is actually running with a native thread
+        RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
         call_thread_start_func_2(th);
     }
     thread_sched_lock(sched, NULL);

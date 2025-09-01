@@ -2386,18 +2386,25 @@ native_thread_create(rb_thread_t *th)
 {
     VM_ASSERT(th->nt == 0);
     RUBY_DEBUG_LOG("th:%d has_dnt:%d", th->serial, th->has_dedicated_nt);
-    RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
 
     if (!th->ractor->threads.sched.enable_mn_threads) {
         th->has_dedicated_nt = 1;
     }
 
+    int retval;
     if (th->has_dedicated_nt) {
-        return native_thread_create_dedicated(th);
+        retval = native_thread_create_dedicated(th);
+        // Hook is called here because th->nt is initialized
+        RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
     }
     else {
-        return native_thread_create_shared(th);
+        retval = native_thread_create_shared(th);
+        // For shared threads, th->nt is not set during creation
+        // Hook will be called later when the thread actually gets a native thread
     }
+
+
+    return retval;
 }
 
 #if USE_NATIVE_THREAD_PRIORITY
