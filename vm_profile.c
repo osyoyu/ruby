@@ -171,6 +171,16 @@ disarm_all_timers(void)
     installed_timers_count = 0;
 }
 
+void
+thread_callback(rb_event_flag_t flag, const rb_internal_thread_event_data_t *data, void *custom_data)
+{
+    printf("(dbg) thread_callback: ");
+    printf("thval=%lu\n", data->thread);
+    if (flag == RUBY_INTERNAL_THREAD_EVENT_STARTED) {
+        install_timer_to_thread(data->thread);
+    }
+}
+
 /**
  * Enable the profiler.
  */
@@ -187,6 +197,9 @@ rb_profiler_enable(VALUE self)
         VALUE thread = rb_ary_entry(threads, i);
         install_timer_to_thread(thread);
     }
+
+    // Register a callback to install timer on newly created threads
+    rb_internal_thread_add_event_hook(&thread_callback, RUBY_INTERNAL_THREAD_EVENT_STARTED, NULL);
 
     return Qtrue;
 }
