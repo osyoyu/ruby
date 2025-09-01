@@ -1,9 +1,227 @@
+#define _GNU_SOURCE
+
+#include <errno.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/ptrace.h>
+
+#include "internal.h"
+#include "internal/thread.h"
+#include "internal/vm.h"
+#include "ruby/debug.h"
+#include "ruby/thread.h"
 #include "vm_core.h"
+
+#define sigev_notify_thread_id _sigev_un._tid
+
+struct signal_handler_data {
+    rb_thread_t *target_thread;
+};
+
+struct sample {
+    /* Meta */
+    rb_thread_t *thread;
+
+    /* Stack frames */
+    int captured_frames;
+    VALUE iseqs[200];
+    int lines[200];
+};
+
+/* Globals */
+
+static struct sample buffer[1000];
+static int buffer_index = 0;
+static timer_t installed_timers[100];
+static int installed_timers_count = 0;
+
+/* async-signal-safe functions only */
+static void
+signal_handler(int sig, siginfo_t *si, void *ucontext)
+{
+    struct signal_handler_data *data = (struct signal_handler_data *)(si->si_value.sival_ptr);
+
+    // Prepare a sample slot
+    if (buffer_index >= 1000) {
+        return;
+    }
+    struct sample *sample = &buffer[buffer_index++];
+    sample = memset(sample, 0, sizeof(struct sample));
+
+    // Set meta fields
+    sample->thread = data->target_thread;
+
+    // Grab backtrace for the target thread
+    int captured_frames;
+    rb_execution_context_t *ec = data->target_thread->ec;
+    if (ec == NULL) {
+        return;
+    }
+    printf("(dbg) signal_handler: ec=%p\n", ec);
+    captured_frames = thread_profile_frames(ec, 0, 200, sample->iseqs, sample->lines);
+    sample->captured_frames = captured_frames;
+
+    return;
+}
+
+static void
+install_signal_handler(void)
+{
+    struct sigaction sa;
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGPROF, &sa, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to set signal handler: %s", strerror(errno));
+    }
+}
+
+static void
+uninstall_signal_handler(void)
+{
+    struct sigaction sa;
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    if (sigaction(SIGPROF, &sa, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to reset signal handler: %s", strerror(errno));
+    }
+}
+
+static void
+install_timer_to_thread(VALUE thval)
+{
+    rb_thread_t *th = rb_thread_ptr(thval);
+    printf("(dbg) install_timer_to_thread: th->nt=%p\n", th->nt);
+    rb_nativethread_id_t thread_id = th->nt->thread_id;
+    assert(pthread_self() == thread_id);
+
+    if (installed_timers_count >= 100) {
+        rb_raise(rb_eRuntimeError, "Too many timers installed");
+    }
+    timer_t timer = installed_timers[installed_timers_count++];
+
+    // Get CPU clock ID for the native thread
+    clockid_t cpu_timer_clock_id;
+    if (pthread_getcpuclockid(thread_id, &cpu_timer_clock_id) != 0) {
+        rb_raise(rb_eRuntimeError, "Failed to get CPU clock ID");
+    }
+
+    // Data to be passed to the signal handler
+    struct signal_handler_data *data = xmalloc(sizeof(struct signal_handler_data));
+    data->target_thread = th;
+
+    // Install kernel timer
+    struct sigevent sev;
+    sev.sigev_notify = SIGEV_THREAD_ID;
+    sev.sigev_signo = SIGPROF;
+    sev.sigev_notify_thread_id = gettid(); // Linux-only
+    sev.sigev_value.sival_ptr = (void *)data;
+
+    int res = timer_create(cpu_timer_clock_id, &sev, &timer);
+    if (res == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to create timer: %s", strerror(errno));
+    }
+
+    // Arm the timer to fire every 10 ms
+    // TODO: Make the interval configurable (in Hz?)
+    struct itimerspec its = {
+        .it_value = {
+            .tv_sec = 0,
+            .tv_nsec = 10 * 1000000, // per 10 ms
+        },
+        .it_interval = {
+            .tv_sec = 0,
+            .tv_nsec = 10 * 1000000, // per 10 ms
+        },
+    };
+    if (timer_settime(timer, 0, &its, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to configure timer: %s", strerror(errno));
+    }
+}
+
+static void
+disarm_timer(timer_t timer)
+{
+    struct itimerspec its = {
+        .it_value = {
+            .tv_sec = 0,
+            .tv_nsec = 0,
+        },
+        .it_interval = {
+            .tv_sec = 0,
+            .tv_nsec = 0,
+        },
+    };
+    if (timer_settime(timer, 0, &its, NULL) == -1) {
+        rb_raise(rb_eRuntimeError, "Failed to disarm timer: %s", strerror(errno));
+    }
+}
+
+static void
+disarm_all_timers(void)
+{
+    for (int i = 0; i < installed_timers_count; i++) {
+        disarm_timer(installed_timers[i]);
+    }
+    installed_timers_count = 0;
+}
+
+/**
+ * Enable the profiler.
+ */
+VALUE
+rb_profiler_enable(VALUE self)
+{
+    // Install signal handler
+    install_signal_handler();
+
+    // Install timer on all threads on the current Ractor
+    VALUE rb_cThread = rb_const_get(rb_cObject, rb_intern("Thread"));
+    VALUE threads = rb_funcall(rb_cThread, rb_intern("list"), 0);
+    for (int i = 0; i < RARRAY_LEN(threads); i++) {
+        VALUE thread = rb_ary_entry(threads, i);
+        install_timer_to_thread(thread);
+    }
+
+    return Qtrue;
+}
+
+/**
+ * Disable the profiler and return collected data.
+ */
+VALUE
+rb_profiler_disable(VALUE self)
+{
+    disarm_all_timers();
+    uninstall_signal_handler();
+
+    for (int i = 0; i < buffer_index; i++) {
+        struct sample *sample = &buffer[i];
+        for (int j = 0; j < sample->captured_frames; j++) {
+            VALUE iseq = sample->iseqs[j];
+            int line = sample->lines[j];
+
+            rb_p(rb_profile_frame_full_label(iseq));
+        }
+    }
+
+    return Qtrue;
+}
 
 /* called from Init_vm() in vm.c */
 void
 Init_vm_profile(void)
 {
-    VALUE rb_mRuby = rb_define_module("Ruby");
-    VALUE rb_mProfiler = rb_define_module_under(rb_mRuby, "Profiler");
+    VALUE rb_mRuby;
+    VALUE rb_mProfiler;
+
+    rb_mRuby = rb_define_module("Ruby");
+    rb_mProfiler = rb_define_module_under(rb_mRuby, "Profiler");
+    rb_define_module_function(rb_mProfiler, "enable", rb_profiler_enable, 0);
+    rb_define_module_function(rb_mProfiler, "disable", rb_profiler_disable, 0);
 }

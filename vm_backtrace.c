@@ -1724,7 +1724,7 @@ rb_debug_inspector_backtrace_locations(const rb_debug_inspector_t *dc)
     return dc->raw_backtrace;
 }
 
-static int
+int
 thread_profile_frames(rb_execution_context_t *ec, int start, int limit, VALUE *buff, int *lines)
 {
     int i;

@@ -119,6 +119,7 @@ void rb_backtrace_each(VALUE (*iter)(VALUE recv, VALUE str), VALUE output);
 int rb_frame_info_p(VALUE obj);
 int rb_get_node_id_from_frame_info(VALUE obj);
 const struct rb_iseq_struct *rb_get_iseq_from_frame_info(VALUE obj);
+int thread_profile_frames(struct rb_execution_context_struct *ec, int start, int limit, VALUE *buff, int *lines);
 
 VALUE rb_ec_backtrace_object(const struct rb_execution_context_struct *ec);
 
