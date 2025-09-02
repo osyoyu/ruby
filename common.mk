@@ -1163,6 +1163,7 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/gem_prelude.rb \
 		$(srcdir)/jit_hook.rb \
 		$(srcdir)/jit_undef.rb \
+		$(srcdir)/vm_profile.rb \
 		$(srcdir)/yjit.rb \
 		$(srcdir)/zjit.rb \
 		$(empty)

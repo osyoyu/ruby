@@ -34,7 +34,11 @@ struct sample {
 
 /* Globals */
 
-static struct sample buffer[1000];
+VALUE rb_mRuby;
+VALUE rb_mProfiler;
+
+#define MAX_SAMPLES 10000
+static struct sample buffer[MAX_SAMPLES];
 static int buffer_index = 0;
 static timer_t installed_timers[100];
 static int installed_timers_count = 0;
@@ -58,7 +62,7 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
     }
 
     // Prepare a sample slot
-    if (buffer_index >= 1000) {
+    if (buffer_index >= MAX_SAMPLES) {
         return;
     }
     struct sample *sample = &buffer[buffer_index++];
@@ -75,6 +79,8 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
     }
     captured_frames = thread_profile_frames(ec, 0, 200, sample->iseqs, sample->lines);
     sample->captured_frames = captured_frames;
+
+    printf("k"); fflush(stdout);
 
     return;
 }
@@ -221,31 +227,49 @@ rb_profiler_enable(VALUE self)
 VALUE
 rb_profiler_disable(VALUE self)
 {
+    // Cleanup
     disarm_all_timers();
     uninstall_signal_handler();
 
+    // Construct a Ruby::Profile::ProfileBuilder object
+    VALUE rb_cProfileBB = rb_const_get(rb_mProfiler, rb_intern("ProfileBuilderBuilder"));
+    VALUE builder = rb_funcall(rb_cProfileBB, rb_intern("new"), 0);
+
     for (int i = 0; i < buffer_index; i++) {
+        VALUE stack = rb_ary_new();
         struct sample *sample = &buffer[i];
         for (int j = 0; j < sample->captured_frames; j++) {
+            VALUE frame = rb_hash_new();
             VALUE iseq = sample->iseqs[j];
-            int line = sample->lines[j];
 
-            rb_p(rb_profile_frame_full_label(iseq));
+            VALUE name = rb_profile_frame_full_label(iseq);
+            rb_p(name);
+            rb_hash_aset(frame, ID2SYM(rb_intern("name")), name);
+
+            VALUE file = rb_profile_frame_path(iseq);
+            rb_hash_aset(frame, ID2SYM(rb_intern("file")), file);
+
+            int line = sample->lines[j];
+            rb_hash_aset(frame, ID2SYM(rb_intern("line")), INT2NUM(line));
+
+            rb_hash_aset(frame, ID2SYM(rb_intern("address")), ULONG2NUM(iseq));
+            rb_ary_push(stack, frame);
         }
+        rb_funcall(builder, rb_intern("add_sample"), 1, stack);
     }
 
-    return Qtrue;
+    return rb_funcall(builder, rb_intern("to_profile"), 0);
 }
 
 /* called from Init_vm() in vm.c */
 void
 Init_vm_profile(void)
 {
-    VALUE rb_mRuby;
-    VALUE rb_mProfiler;
-
     rb_mRuby = rb_define_module("Ruby");
     rb_mProfiler = rb_define_module_under(rb_mRuby, "Profiler");
+    rb_define_class_under(rb_mProfiler, "ProfileBuilderBuilder", rb_cObject);
     rb_define_module_function(rb_mProfiler, "enable", rb_profiler_enable, 0);
     rb_define_module_function(rb_mProfiler, "disable", rb_profiler_disable, 0);
 }
+
+#include "vm_profile.rbinc"
