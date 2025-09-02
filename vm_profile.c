@@ -45,6 +45,18 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
 {
     struct signal_handler_data *data = (struct signal_handler_data *)(si->si_value.sival_ptr);
 
+    // Know the current thread
+    rb_execution_context_t *ec = data->target_thread->ec;
+    if (ec == NULL) {
+        return;
+    }
+    assert(ec->thread_ptr->nt->thread_id == pthread_self());
+    if (ec->thread_ptr->nt->thread_id != pthread_self()) {
+        printf("(dbg) signal_handler: expected %lu, got %lu\n", ec->thread_ptr->nt->thread_id, pthread_self());
+        printf("r"); fflush(stdout);
+        return;
+    }
+
     // Prepare a sample slot
     if (buffer_index >= 1000) {
         return;
@@ -57,11 +69,10 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
 
     // Grab backtrace for the target thread
     int captured_frames;
-    rb_execution_context_t *ec = data->target_thread->ec;
-    if (ec == NULL) {
+    printf("(dbg) signal_handler: ec=%p\n", ec);
+    if (ec->thread_ptr->status != THREAD_RUNNABLE) {
         return;
     }
-    printf("(dbg) signal_handler: ec=%p\n", ec);
     captured_frames = thread_profile_frames(ec, 0, 200, sample->iseqs, sample->lines);
     sample->captured_frames = captured_frames;
 

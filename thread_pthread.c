@@ -2275,6 +2275,7 @@ nt_start(void *ptr)
             }
             thread_sched_unlock(sched, th);
 
+            RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
             // start threads
             call_thread_start_func_2(th);
             break; // TODO: allow to change to the SNT
@@ -2395,7 +2396,7 @@ native_thread_create(rb_thread_t *th)
     if (th->has_dedicated_nt) {
         retval = native_thread_create_dedicated(th);
         // Hook is called here because th->nt is initialized
-        RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
+        // RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
     }
     else {
         retval = native_thread_create_shared(th);
