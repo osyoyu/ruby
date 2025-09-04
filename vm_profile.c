@@ -56,8 +56,6 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
     }
     assert(ec->thread_ptr->nt->thread_id == pthread_self());
     if (ec->thread_ptr->nt->thread_id != pthread_self()) {
-        printf("(dbg) signal_handler: expected %lu, got %lu\n", ec->thread_ptr->nt->thread_id, pthread_self());
-        printf("r"); fflush(stdout);
         return;
     }
 
@@ -73,14 +71,11 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
 
     // Grab backtrace for the target thread
     int captured_frames;
-    printf("(dbg) signal_handler: ec=%p\n", ec);
     if (ec->thread_ptr->status != THREAD_RUNNABLE) {
         return;
     }
     captured_frames = thread_profile_frames(ec, 0, 200, sample->iseqs, sample->lines);
     sample->captured_frames = captured_frames;
-
-    printf("k"); fflush(stdout);
 
     return;
 }
@@ -113,7 +108,6 @@ static void
 install_timer_to_thread(VALUE thval)
 {
     rb_thread_t *th = rb_thread_ptr(thval);
-    printf("(dbg) install_timer_to_thread: th->nt=%p\n", th->nt);
     rb_nativethread_id_t thread_id = th->nt->thread_id;
     assert(pthread_self() == thread_id);
 
@@ -191,8 +185,6 @@ disarm_all_timers(void)
 void
 thread_callback(rb_event_flag_t flag, const rb_internal_thread_event_data_t *data, void *custom_data)
 {
-    printf("(dbg) thread_callback: ");
-    printf("thval=%lu\n", data->thread);
     if (flag == RUBY_INTERNAL_THREAD_EVENT_STARTED) {
         install_timer_to_thread(data->thread);
     }
@@ -243,7 +235,6 @@ rb_profiler_disable(VALUE self)
             VALUE iseq = sample->iseqs[j];
 
             VALUE name = rb_profile_frame_full_label(iseq);
-            rb_p(name);
             rb_hash_aset(frame, ID2SYM(rb_intern("name")), name);
 
             VALUE file = rb_profile_frame_path(iseq);
