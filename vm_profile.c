@@ -265,7 +265,7 @@ rb_profiler_disable(VALUE self)
 void
 Init_vm_profile(void)
 {
-    rb_mRuby = rb_define_module("Ruby");
+    rb_mRuby = rb_const_get(rb_cObject, rb_intern("RubyVM"));
     rb_mProfiler = rb_define_module_under(rb_mRuby, "Profiler");
     rb_define_class_under(rb_mProfiler, "ProfileBuilderBuilder", rb_cObject);
     rb_define_module_function(rb_mProfiler, "enable", rb_profiler_enable, 0);

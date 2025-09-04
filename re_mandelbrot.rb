@@ -57,11 +57,11 @@ p threads
 $start_time = Time.now
 $ser2 = true
 
-Ruby::Profiler.enable
+RubyVM::Profiler.enable
 mandelbrot_image = generate_mandelbrot_image(width, height, max_iter, threads)
 mandelbrot_image.save('mandelbrot.png')
 puts "Mandelbrot image saved as 'mandelbrot.png'"
-t = Ruby::Profiler.disable
+t = RubyVM::Profiler.disable
 buffer = StringIO.new
 gz = Zlib::GzipWriter.new(buffer)
 gz.write(t)

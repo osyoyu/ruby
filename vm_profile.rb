@@ -33,7 +33,7 @@
 # Profobuf encoder in Go's runtime/pprof.
 # src/runtime/pprof/protobuf.go
 
-module Ruby
+class RubyVM
   module Profiler
     class Protobuf
       attr_accessor :data, :nest
