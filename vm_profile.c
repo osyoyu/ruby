@@ -7,6 +7,8 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <sys/ptrace.h>
 
 #include "internal.h"
@@ -32,6 +34,19 @@ struct sample {
     int lines[200];
 };
 
+struct prof_ringbuffer {
+    int size;
+    atomic_int head;
+    atomic_int tail;
+    struct sample *samples;
+};
+
+static struct prof_ringbuffer * prof_ringbuffer_new(int size);
+static void prof_ringbuffer_free(struct prof_ringbuffer *ringbuf);
+// async-signal-safe
+static bool prof_ringbuffer_push(struct prof_ringbuffer *ringbuf, struct sample *sample);
+static bool prof_ringbuffer_pop(struct prof_ringbuffer *ringbuf, struct sample *out);
+
 /* Globals */
 
 VALUE rb_mRuby;
@@ -42,6 +57,82 @@ static struct sample buffer[MAX_SAMPLES];
 static int buffer_index = 0;
 static timer_t installed_timers[100];
 static int installed_timers_count = 0;
+
+static struct prof_ringbuffer *ringbuf = NULL;
+
+/* Buffer storage */
+
+static struct prof_ringbuffer *
+prof_ringbuffer_new(int size) {
+    if (size <= 0) { return NULL; }
+
+    struct prof_ringbuffer *ringbuf = malloc(sizeof(struct prof_ringbuffer));
+    if (!ringbuf) { goto err; }
+    ringbuf->size = size + 1; // One extra slot is required to distinguish full from empty
+    ringbuf->head = 0;
+    ringbuf->tail = 0;
+    ringbuf->samples = malloc(ringbuf->size * sizeof(struct sample));
+    if (!ringbuf->samples) { goto err_free_ringbuf; }
+    return ringbuf;
+
+err_free_ringbuf:
+    free(ringbuf);
+err:
+    return NULL;
+}
+
+static void
+prof_ringbuffer_free(struct prof_ringbuffer *ringbuf) {
+    free(ringbuf->samples);
+    free(ringbuf);
+}
+
+// Returns 0 on success, 1 on failure (buffer full).
+static bool
+prof_ringbuffer_push(struct prof_ringbuffer *ringbuf, struct sample *sample) {
+    // Tail is only modified by the producer thread (us), so relaxed ordering is sufficient
+    const int current_tail = atomic_load_explicit(&ringbuf->tail, memory_order_relaxed);
+    const int next_tail = (current_tail + 1) % ringbuf->size;
+
+    // Check head to see if buffer is full. If next_tail == head, the buffer is full.
+    // Use acquire ordering to synchronize with the head update in prof_ringbuffer_pop().
+    // This ensures we see the latest head value.
+    if (next_tail == atomic_load_explicit(&ringbuf->head, memory_order_acquire)) {
+        return false;  // Buffer full
+    }
+
+    // Copy the sample from the provided input pointer to the buffer.
+    ringbuf->samples[current_tail] = *sample;
+
+    // Use release ordering when updating tail to ensure the sample write is visible
+    // to the consumer before they see the new tail value
+    atomic_store_explicit(&ringbuf->tail, next_tail, memory_order_release);
+    return true;
+}
+
+// Returns 0 on success, 1 on failure (buffer empty).
+static bool
+prof_ringbuffer_pop(struct prof_ringbuffer *ringbuf, struct sample *out) {
+    // Head won't be modifed by the producer thread. It is safe to use relaxed ordering.
+    const int current_head = atomic_load_explicit(&ringbuf->head, memory_order_relaxed);
+
+    // Check tail to see if buffer is empty. If head == tail, the buffer is empty.
+    // Use acquire ordering to synchronize with the tail update in prof_ringbuffer_push().
+    // This ensures we see the latest tail value.
+    if (current_head == atomic_load_explicit(&ringbuf->tail, memory_order_acquire)) {
+        return false;  // Buffer empty
+    }
+
+    // Copy the sample from the buffer to the provided output pointer.
+    *out = ringbuf->samples[current_head];
+
+    // Use release ordering when updating head to ensure the sample read is complete
+    // before the producer sees the new head value
+    atomic_store_explicit(&ringbuf->head, (current_head + 1) % ringbuf->size, memory_order_release);
+    return true;
+}
+
+/* END of ring buffer implementation */
 
 /* async-signal-safe functions only */
 static void
@@ -63,19 +154,25 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
     if (buffer_index >= MAX_SAMPLES) {
         return;
     }
-    struct sample *sample = &buffer[buffer_index++];
-    sample = memset(sample, 0, sizeof(struct sample));
+    struct sample sample;
+    memset(&sample, 0, sizeof(struct sample));
 
     // Set meta fields
-    sample->thread = data->target_thread;
+    sample.thread = data->target_thread;
 
     // Grab backtrace for the target thread
     int captured_frames;
     if (ec->thread_ptr->status != THREAD_RUNNABLE) {
         return;
     }
-    captured_frames = thread_profile_frames(ec, 0, 200, sample->iseqs, sample->lines);
-    sample->captured_frames = captured_frames;
+    captured_frames = thread_profile_frames(ec, 0, 200, sample.iseqs, sample.lines);
+    sample.captured_frames = captured_frames;
+
+    int res = prof_ringbuffer_push(ringbuf, &sample);
+    if (!res) {
+        // Buffer full, drop the sample
+        return;
+    }
 
     return;
 }
@@ -196,6 +293,12 @@ thread_callback(rb_event_flag_t flag, const rb_internal_thread_event_data_t *dat
 VALUE
 rb_profiler_enable(VALUE self)
 {
+    // Initialize ring buffer
+    ringbuf = prof_ringbuffer_new(1000);
+    if (ringbuf == NULL) {
+        rb_raise(rb_eRuntimeError, "Failed to create ring buffer");
+    }
+
     // Install signal handler
     install_signal_handler();
 
