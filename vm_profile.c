@@ -52,13 +52,17 @@ static bool prof_ringbuffer_pop(struct prof_ringbuffer *ringbuf, struct sample *
 VALUE rb_mRuby;
 VALUE rb_mProfiler;
 
-#define MAX_SAMPLES 10000
-static struct sample buffer[MAX_SAMPLES];
-static int buffer_index = 0;
 static timer_t installed_timers[100];
 static int installed_timers_count = 0;
 
 static struct prof_ringbuffer *ringbuf = NULL;
+
+static struct sample *sample_storage;
+static int sample_storage_capacity = 0;
+static int sample_storage_index = 0;
+
+static bool is_running = false;
+static pthread_t sample_collector_thread_handle;
 
 /* Buffer storage */
 
@@ -151,9 +155,9 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
     }
 
     // Prepare a sample slot
-    if (buffer_index >= MAX_SAMPLES) {
-        return;
-    }
+    // if (buffer_index >= MAX_SAMPLES) {
+    //     return;
+    // }
     struct sample sample;
     memset(&sample, 0, sizeof(struct sample));
 
@@ -287,6 +291,68 @@ thread_callback(rb_event_flag_t flag, const rb_internal_thread_event_data_t *dat
     }
 }
 
+// Ensures that the session's sample array has capacity for at least one more sample
+// Returns true if successful, false if memory allocation failed
+bool
+ensure_sample_capacity()
+{
+    if (sample_storage == NULL) {
+        // Initial allocation
+        sample_storage_capacity = 1024;
+        sample_storage = xmalloc(sample_storage_capacity * sizeof(struct sample));
+        if (sample_storage == NULL) {
+            rb_bug("allocation failed");
+        }
+        return true;
+    }
+
+    // Check if we need to expand
+    if (sample_storage_index < sample_storage_capacity) {
+        return true;
+    }
+
+    // Calculate new size (double the current size)
+    size_t new_capacity = sample_storage_capacity * 2;
+
+    // Reallocate the array
+    struct sample *new_sample_storage = xrealloc(sample_storage, new_capacity * sizeof(struct sample));
+    if (new_sample_storage == NULL) {
+        rb_bug("allocation failed");
+    }
+
+    sample_storage = new_sample_storage;
+    sample_storage_capacity = new_capacity;
+
+    return true;
+}
+
+static void *
+sample_collection_thread(void *arg)
+{
+    while (is_running) {
+        struct pf2_session *session = arg;
+
+        // Take samples from the ring buffer
+        struct sample sample;
+        while (prof_ringbuffer_pop(ringbuf, &sample) == true) {
+            // Ensure we have capacity before adding a new sample
+            if (!ensure_sample_capacity()) {
+                // Failed to expand buffer
+                printf("Failed to expand sample buffer. Dropping sample\n");
+                break;
+            }
+
+            sample_storage[sample_storage_index++] = sample;
+        }
+
+        // Sleep for 100 ms
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000, };
+        nanosleep(&ts, NULL);
+    }
+
+    return NULL;
+}
+
 /**
  * Enable the profiler.
  */
@@ -313,6 +379,12 @@ rb_profiler_enable(VALUE self)
     // Register a callback to install timer on newly created threads
     rb_internal_thread_add_event_hook(&thread_callback, RUBY_INTERNAL_THREAD_EVENT_STARTED, NULL);
 
+    // Start a collector thread
+    is_running = true;
+    if (pthread_create(&sample_collector_thread_handle, NULL, sample_collection_thread, NULL) != 0) {
+        rb_raise(rb_eRuntimeError, "Failed to spawn sample collector thread");
+    }
+
     return Qtrue;
 }
 
@@ -322,17 +394,22 @@ rb_profiler_enable(VALUE self)
 VALUE
 rb_profiler_disable(VALUE self)
 {
+    is_running = false;
+
     // Cleanup
     disarm_all_timers();
     uninstall_signal_handler();
+    pthread_join(sample_collector_thread_handle, NULL);
 
     // Construct a Ruby::Profile::ProfileBuilder object
     VALUE rb_cProfileBB = rb_const_get(rb_mProfiler, rb_intern("ProfileBuilderBuilder"));
     VALUE builder = rb_funcall(rb_cProfileBB, rb_intern("new"), 0);
 
-    for (int i = 0; i < buffer_index; i++) {
+    printf("Collected %d samples\n", sample_storage_index);
+
+    for (int i = 0; i < sample_storage_index; i++) {
+        struct sample *sample = &sample_storage[i];
         VALUE stack = rb_ary_new();
-        struct sample *sample = &buffer[i];
         for (int j = 0; j < sample->captured_frames; j++) {
             VALUE frame = rb_hash_new();
             VALUE iseq = sample->iseqs[j];
