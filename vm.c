@@ -3635,12 +3635,12 @@ const rb_data_type_t ruby_threadptr_data_type = {
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
-/* Semi-private accessor to avoid exporting ruby_threadptr_data_type */
-rb_thread_t *
-rb_thread_ptr_uninlined(VALUE thval)
-{
-    return rb_thread_ptr(thval);
-}
+// /* Semi-private accessor to avoid exporting ruby_threadptr_data_type */
+// rb_thread_t *
+// rb_thread_ptr_uninlined(VALUE thval)
+// {
+//     return rb_thread_ptr(thval);
+// }
 
 VALUE
 rb_obj_is_thread(VALUE obj)

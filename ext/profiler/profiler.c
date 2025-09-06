@@ -206,7 +206,7 @@ uninstall_signal_handler(void)
 static void
 install_timer_to_thread(VALUE thval)
 {
-    rb_thread_t *th = rb_thread_ptr_uninlined(thval);
+    rb_thread_t *th = rb_thread_ptr(thval);
     rb_nativethread_id_t thread_id = th->nt->thread_id;
     assert(pthread_self() == thread_id);
 
