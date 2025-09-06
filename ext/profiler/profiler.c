@@ -10,6 +10,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sys/ptrace.h>
+#include <sys/time.h>
 
 #include "internal.h"
 #include "internal/thread.h"
@@ -53,8 +54,11 @@ static bool prof_ringbuffer_pop(struct prof_ringbuffer *ringbuf, struct sample *
 static VALUE rb_mRuby;
 static VALUE rb_mProfiler;
 
+#if defined(HAVE_TIMER_CREATE) && defined(HAVE_CLOCK_THREAD_CPUTIME_ID)
 static timer_t installed_timers[100];
 static int installed_timers_count = 0;
+#else
+#endif
 
 static struct prof_ringbuffer *ringbuf = NULL;
 
@@ -145,6 +149,21 @@ signal_handler(int sig, siginfo_t *si, void *ucontext)
 {
     struct signal_handler_data *data = (struct signal_handler_data *)(si->si_value.sival_ptr);
 
+    bool is_processwide_signal;
+    if (data == NULL) {
+        // This signal was probably generated from setitimer()
+        is_processwide_signal = true;
+    } else {
+        // This signal was probably generated from per-thread timer_create()
+        is_processwide_signal = false;
+    }
+
+    if (is_processwide_signal) {
+        // TODO
+        // give up for now
+        return;
+    }
+
     // Know the current thread
     rb_execution_context_t *ec = data->target_thread->ec;
     if (ec == NULL) {
@@ -204,8 +223,22 @@ uninstall_signal_handler(void)
 }
 
 static void
+install_timer_to_process(void)
+{
+    struct itimerval interval = {
+        .it_interval = { .tv_sec = 0, .tv_usec = 10 * 1000 },
+        .it_value = { .tv_sec = 0, .tv_usec = 10 * 1000 },
+    };
+    int res = setitimer(ITIMER_PROF, &interval, NULL);
+    if (res != 0) {
+        rb_bug("failed");
+    }
+}
+
+static void
 install_timer_to_thread(VALUE thval)
 {
+#if defined(HAVE_TIMER_CREATE) && defined(HAVE_CLOCK_THREAD_CPUTIME_ID)
     rb_thread_t *th = rb_thread_ptr_uninlined(thval);
     rb_nativethread_id_t thread_id = th->nt->thread_id;
     assert(pthread_self() == thread_id);
@@ -252,11 +285,19 @@ install_timer_to_thread(VALUE thval)
     if (timer_settime(timer, 0, &its, NULL) == -1) {
         rb_raise(rb_eRuntimeError, "Failed to configure timer: %s", strerror(errno));
     }
+#else
+    rb_raise(rb_eRuntimeError, "Profiling with per-thread timers is not supported on this system");
+#endif
 }
 
 static void
+#if defined(HAVE_TIMER_CREATE) && defined(HAVE_CLOCK_THREAD_CPUTIME_ID)
 disarm_timer(timer_t timer)
+#else
+disarm_timer(int timer)
+#endif
 {
+#if defined(HAVE_TIMER_CREATE) && defined(HAVE_CLOCK_THREAD_CPUTIME_ID)
     struct itimerspec its = {
         .it_value = {
             .tv_sec = 0,
@@ -270,23 +311,30 @@ disarm_timer(timer_t timer)
     if (timer_settime(timer, 0, &its, NULL) == -1) {
         rb_raise(rb_eRuntimeError, "Failed to disarm timer: %s", strerror(errno));
     }
+#else
+#endif
 }
 
 static void
 disarm_all_timers(void)
 {
+#if defined(HAVE_TIMER_CREATE) && defined(HAVE_CLOCK_THREAD_CPUTIME_ID)
     for (int i = 0; i < installed_timers_count; i++) {
         disarm_timer(installed_timers[i]);
     }
     installed_timers_count = 0;
+#else
+#endif
 }
 
 static void
 thread_callback(rb_event_flag_t flag, const rb_internal_thread_event_data_t *data, void *custom_data)
 {
+#if defined(HAVE_TIMER_CREATE) && defined(HAVE_CLOCK_THREAD_CPUTIME_ID)
     if (flag == RUBY_INTERNAL_THREAD_EVENT_STARTED) {
         install_timer_to_thread(data->thread);
     }
+#endif
 }
 
 // Ensures that the session's sample array has capacity for at least one more sample
@@ -364,6 +412,7 @@ rb_profiler_enable(VALUE self)
     // Install signal handler
     install_signal_handler();
 
+#if defined(HAVE_TIMER_CREATE) && defined(HAVE_CLOCK_THREAD_CPUTIME_ID)
     // Install timer on all threads on the current Ractor
     VALUE rb_cThread = rb_const_get(rb_cObject, rb_intern("Thread"));
     VALUE threads = rb_funcall(rb_cThread, rb_intern("list"), 0);
@@ -371,6 +420,10 @@ rb_profiler_enable(VALUE self)
         VALUE thread = rb_ary_entry(threads, i);
         install_timer_to_thread(thread);
     }
+#endif
+
+    // Install timer on process
+    install_timer_to_process();
 
     // Register a callback to install timer on newly created threads
     rb_internal_thread_add_event_hook(&thread_callback, RUBY_INTERNAL_THREAD_EVENT_STARTED, NULL);
