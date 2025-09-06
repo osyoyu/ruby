@@ -24,6 +24,7 @@
 #objspace
 #openssl
 #pathname
+#profile
 #psych
 #pty
 #racc/cparse
