@@ -110,7 +110,6 @@ rb_call_builtin_inits(void)
     BUILTIN(nilclass);
     BUILTIN(marshal);
     BUILTIN(jit_undef);
-    BUILTIN(vm_profile);
     Init_builtin_prelude();
 }
 #undef CALL

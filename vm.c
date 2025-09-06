@@ -3635,6 +3635,13 @@ const rb_data_type_t ruby_threadptr_data_type = {
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
+/* Semi-private accessor to avoid exporting ruby_threadptr_data_type */
+rb_thread_t *
+rb_thread_ptr_uninlined(VALUE thval)
+{
+    return rb_thread_ptr(thval);
+}
+
 VALUE
 rb_obj_is_thread(VALUE obj)
 {
@@ -4323,9 +4330,6 @@ Init_VM(void)
                             OPTIMIZED_METHOD_TYPE_BLOCK_CALL, 0, METHOD_VISI_PUBLIC);
     rb_obj_freeze(rb_block_param_proxy);
     rb_vm_register_global_object(rb_block_param_proxy);
-
-    /* vm_profile.c */
-    Init_vm_profile();
 
     /* vm_backtrace.c */
     Init_vm_backtrace();

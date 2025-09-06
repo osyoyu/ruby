@@ -187,7 +187,6 @@ COMMONOBJS    = \
 		vm_dump.$(OBJEXT) \
 		vm_sync.$(OBJEXT) \
 		vm_trace.$(OBJEXT) \
-		vm_profile.$(OBJEXT) \
 		weakmap.$(OBJEXT) \
 		$(PRISM_FILES) \
 		$(YJIT_OBJ) \
@@ -1163,7 +1162,6 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/gem_prelude.rb \
 		$(srcdir)/jit_hook.rb \
 		$(srcdir)/jit_undef.rb \
-		$(srcdir)/vm_profile.rb \
 		$(srcdir)/yjit.rb \
 		$(srcdir)/zjit.rb \
 		$(empty)

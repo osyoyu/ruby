@@ -44,9 +44,6 @@ void Init_vm_stack_canary(void);
 /* vm_method.c */
 void Init_eval_method(void);
 
-/* vm_profile.c */
-void Init_vm_profile(void);
-
 /* inits.c */
 void rb_call_inits(void);
 

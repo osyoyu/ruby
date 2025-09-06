@@ -77,6 +77,7 @@ VALUE rb_thread_io_blocking_operation(VALUE self, VALUE(*function)(VALUE), VALUE
 
 /* thread.c (export) */
 int ruby_thread_has_gvl_p(void); /* for ext/fiddle/closure.c */
+struct rb_thread_struct *rb_thread_ptr_uninlined(VALUE thval); /* for ext/profiler */
 
 RUBY_SYMBOL_EXPORT_END
 
