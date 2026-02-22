@@ -1725,7 +1725,7 @@ rb_debug_inspector_backtrace_locations(const rb_debug_inspector_t *dc)
 }
 
 static int
-thread_profile_frames(rb_execution_context_t *ec, int start, int limit, VALUE *buff, int *lines)
+profile_frames_walk_0(rb_execution_context_t *ec, int start, int limit, VALUE *buff, int *lines)
 {
     int i;
     const rb_control_frame_t *cfp = ec->cfp, *end_cfp = RUBY_VM_END_CONTROL_FRAME(ec);
@@ -1812,14 +1812,34 @@ rb_profile_frames(int start, int limit, VALUE *buff, int *lines)
         return 0;
     }
 
-    return thread_profile_frames(ec, start, limit, buff, lines);
+    return profile_frames_walk_0(ec, start, limit, buff, lines);
 }
 
 int
 rb_profile_thread_frames(VALUE thread, int start, int limit, VALUE *buff, int *lines)
 {
     rb_thread_t *th = rb_thread_ptr(thread);
-    return thread_profile_frames(th->ec, start, limit, buff, lines);
+    return profile_frames_walk_0(th->ec, start, limit, buff, lines);
+}
+
+void *
+rb_profile_frames_ec(void)
+{
+    rb_execution_context_t *ec = rb_current_execution_context(false);
+
+    // If there is no EC, we may be attempting to profile a non-Ruby thread or a
+    // M:N shared native thread which has no active Ruby thread.
+    if (!ec) {
+        return 0;
+    }
+
+    return ec;
+}
+
+int
+rb_profile_frames_walk(void *ec, int start, int limit, VALUE *buff, int *lines)
+{
+    return profile_frames_walk_0(ec, start, limit, buff, lines);
 }
 
 static const rb_iseq_t *

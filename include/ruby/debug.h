@@ -71,6 +71,20 @@ int rb_profile_frames(int start, int limit, VALUE *buff, int *lines);
 int rb_profile_thread_frames(VALUE thread, int start, int limit, VALUE *buff, int *lines);
 
 /**
+ * Captures the current "execution context" and returns an opaque pointer representing it.
+ * The pointer may be passed to rb_profile_frames_walk() to query the backtrace at the time of capture.
+ *
+ * @return  An opaque pointer representing the current execution context.
+ */
+void *rb_profile_frames_ec(void);
+
+/**
+ * Alternate version of rb_profile_frames() which accepts an opaque execution context pointer as the first argument.
+ * This version does not suffer of sampling bias.
+ */
+int rb_profile_frames_walk(void *ec, int start, int limit, VALUE *buff, int *lines);
+
+/**
  * Queries the path of the passed backtrace.
  *
  * @param[in]  frame      What rb_profile_frames() returned.
