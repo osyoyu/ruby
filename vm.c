@@ -677,6 +677,12 @@ rb_vm_t *ruby_current_vm_ptr = NULL;
 rb_ractor_t *ruby_single_main_ractor;
 bool ruby_vm_keep_script_lines;
 
+RUBY_FUNC_EXPORTED rb_vm_t *
+rb_vm_get_current(void)
+{
+    return ruby_current_vm_ptr;
+}
+
 #ifdef RB_THREAD_LOCAL_SPECIFIER
 RB_THREAD_LOCAL_SPECIFIER rb_execution_context_t *ruby_current_ec;
 

@@ -44,6 +44,20 @@ rb_internal_thread_remove_event_hook(rb_internal_thread_event_hook_t * hook)
     return false;
 }
 
+bool
+rb_profile_event_hook_set(rb_profile_event_hook_t hook, void *user_data)
+{
+    // not implemented
+    return false;
+}
+
+bool
+rb_profile_event_hook_clear(void)
+{
+    // not implemented
+    return false;
+}
+
 RBIMPL_ATTR_NORETURN()
 static void
 w32_error(const char *func)

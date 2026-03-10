@@ -61,6 +61,13 @@ const char *rb_sourcefile(void);
  */
 int rb_frame_method_id_and_class(ID *idp, VALUE *klassp);
 
+/**
+ * Equivalent to GET_VM() macro, but intended for use in ext/.
+ *
+ * @return         A pointer to the current VM instance.
+ */
+struct rb_vm_struct *rb_vm_get_current(void);
+
 /* vm_eval.c */
 
 /**

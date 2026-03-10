@@ -24,6 +24,7 @@
 #include "ruby/internal/cast.h"
 #include "ruby/internal/config.h"
 #include "ruby/internal/dllexport.h"
+#include "ruby/internal/stdbool.h"
 #include "ruby/internal/value.h"
 
 RBIMPL_SYMBOL_EXPORT_BEGIN()
@@ -254,6 +255,38 @@ VALUE rb_thread_local_aset(VALUE thread, ID key, VALUE val);
  * fork a process don't forget to call it.
  */
 void rb_thread_atfork(void);
+
+typedef enum {
+    RB_PROFILE_EVENT_TYPE_NATIVE_THREAD_CREATED,
+    RB_PROFILE_EVENT_TYPE_NATIVE_THREAD_DESTROYED,
+} rb_profile_event_type_t;
+
+typedef void (*rb_profile_event_hook_t)(rb_profile_event_type_t event_type, const void *event_data, void *user_data);
+
+typedef struct rb_profile_event_native_thread_create_data {
+    void *native_thread; // rb_native_thread
+    bool is_dedicated;
+} rb_profile_event_native_thread_create_data_t;
+
+typedef struct rb_profile_event_native_thread_destroy_data {
+    void *native_thread; // rb_native_thread
+} rb_profile_event_native_thread_destroy_data_t;
+
+typedef struct rb_profile_event_native_thread_assign_data {
+    void *thread; // rb_thread_t
+    void *native_thread; // rb_native_thread
+} rb_profile_event_native_thread_assign_data_t;
+
+/**
+ * Register a hook for events which the profiler neede to be notified of.
+ * This function is designed exclusively for the ext/profiler profiler.
+ */
+bool rb_profile_event_hook_set(rb_profile_event_hook_t hook, void *user_data);
+
+/**
+ * Remove the hook registered by rb_profile_event_hook_set().
+ */
+bool rb_profile_event_hook_clear(void);
 
 /**
  * :FIXME: situation  of this function  is unclear.   It seems nobody  uses it.
