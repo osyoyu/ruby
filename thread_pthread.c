@@ -9,6 +9,7 @@
 
 **********************************************************************/
 
+#include "ruby/internal/intern/thread.h"
 #ifdef THREAD_SYSTEM_DEPENDENT_IMPLEMENTATION
 
 #include "internal/gc.h"
@@ -283,6 +284,10 @@ rb_native_cond_timedwait(rb_nativethread_cond_t *cond, pthread_mutex_t *mutex, u
 
 static rb_internal_thread_event_hook_t *rb_internal_thread_event_hooks = NULL;
 static void rb_thread_execute_hooks(rb_event_flag_t event, rb_thread_t *th);
+
+static rb_profile_event_hook_t rb_profile_event_hook = NULL;
+static void *rb_profile_event_hook_user_data = NULL;
+static void rb_profile_event_hook_notify(rb_profile_event_type_t event_type, const void *event_data);
 
 #if 0
 static const char *
@@ -1838,6 +1843,12 @@ native_thread_destroy(struct rb_native_thread *nt)
         }
 
         native_thread_destroy_atfork(nt);
+
+        rb_profile_event_native_thread_destroy_data_t event_data = {
+            .native_thread = (void *)nt,
+        };
+        rb_profile_event_hook_notify(RB_PROFILE_EVENT_TYPE_NATIVE_THREAD_DESTROYED, &event_data);
+
     }
 }
 
@@ -2246,6 +2257,12 @@ nt_start(void *ptr)
 
     RUBY_DEBUG_LOG("nt:%u", nt->serial);
 
+    rb_profile_event_native_thread_create_data_t event_data = {
+        .native_thread = (void *)nt,
+        .is_dedicated = nt->dedicated ? true : false,
+    };
+    rb_profile_event_hook_notify(RB_PROFILE_EVENT_TYPE_NATIVE_THREAD_CREATED, &event_data);
+
     if (!nt->dedicated) {
         coroutine_initialize_main(nt->nt_context);
     }
@@ -2385,12 +2402,14 @@ native_thread_create(rb_thread_t *th)
         th->has_dedicated_nt = 1;
     }
 
+    int retval;
     if (th->has_dedicated_nt) {
-        return native_thread_create_dedicated(th);
+        retval = native_thread_create_dedicated(th);
     }
     else {
-        return native_thread_create_shared(th);
+        retval = native_thread_create_shared(th);
     }
+    return retval;
 }
 
 #if USE_NATIVE_THREAD_PRIORITY
@@ -3473,6 +3492,49 @@ rb_thread_execute_hooks(rb_event_flag_t event, rb_thread_t *th)
     }
     if ((r = pthread_rwlock_unlock(&rb_internal_thread_event_hooks_rw_lock))) {
         rb_bug_errno("pthread_rwlock_unlock", r);
+    }
+}
+
+bool
+rb_profile_event_hook_set(rb_profile_event_hook_t hook, void *user_data)
+{
+    bool success = false;
+
+    if (rb_profile_event_hook == NULL) {
+        rb_profile_event_hook = hook;
+        rb_profile_event_hook_user_data = user_data;
+        success = true;
+    }
+    else {
+        success = false;
+    }
+    return success;
+}
+
+bool
+rb_profile_event_hook_clear(void)
+{
+    bool success = false;
+
+    if (rb_profile_event_hook) {
+        rb_profile_event_hook = NULL;
+        rb_profile_event_hook_user_data = NULL;
+        success = true;
+    }
+    else {
+        success = false;
+    }
+    return success;
+}
+
+static void
+rb_profile_event_hook_notify(rb_profile_event_type_t event_type, const void *event_data)
+{
+    rb_profile_event_hook_t callback = rb_profile_event_hook;
+    void *user_data = rb_profile_event_hook_user_data;
+
+    if (callback) {
+        (*callback)(event_type, event_data, user_data);
     }
 }
 
