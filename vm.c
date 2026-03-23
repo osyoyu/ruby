@@ -3849,6 +3849,12 @@ const rb_data_type_t ruby_threadptr_data_type = {
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
+rb_thread_t *
+rb_thread_ptr_uninlined(VALUE thval)
+{
+    return rb_thread_ptr(thval);
+}
+
 VALUE
 rb_obj_is_thread(VALUE obj)
 {
@@ -3892,7 +3898,7 @@ rb_ec_initialize_vm_stack(rb_execution_context_t *ec, VALUE *stack, size_t size)
 void
 rb_ec_clear_vm_stack(rb_execution_context_t *ec)
 {
-    // set cfp to NULL before clearing the stack in case `thread_profile_frames`
+    // set cfp to NULL before clearing the stack in case `profile_thread_frames`
     // gets called in this middle of `rb_ec_set_vm_stack` via signal handler.
     ec->cfp = NULL;
     rb_ec_set_vm_stack(ec, NULL, 0);

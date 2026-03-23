@@ -2268,6 +2268,7 @@ nt_start(void *ptr)
             }
             thread_sched_unlock(sched, th);
 
+            RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
             // start threads
             call_thread_start_func_2(th);
             break; // TODO: allow to change to the SNT
@@ -2379,7 +2380,6 @@ native_thread_create(rb_thread_t *th)
 {
     VM_ASSERT(th->nt == 0);
     RUBY_DEBUG_LOG("th:%d has_dnt:%d", th->serial, th->has_dedicated_nt);
-    RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_STARTED, th);
 
     if (!th->ractor->threads.sched.enable_mn_threads) {
         th->has_dedicated_nt = 1;
